@@ -10,7 +10,8 @@ jobs:
     runs-on: ubuntu-latest
     env:
       # SQLite is enough for CI — same engine the dev setup uses.
-      DATABASE_URL: "file:./prisma/ci.db"
+      # Path is relative to the prisma/ schema dir, so this is prisma/ci.db.
+      DATABASE_URL: "file:./ci.db"
       AUTH_SECRET: "ci-secret-not-used-for-anything-real"
     steps:
       - uses: actions/checkout@v4
