@@ -96,7 +96,27 @@ data on first load.
 | `npm run db:seed` | Re-seed demo data |
 | `npm run db:reset` | Wipe and re-seed the database |
 | `npm run db:migrate` | Create a migration (for real deployments) |
+| `npm test` | Run the integration test suite (against a throwaway SQLite DB) |
 | `npm run lint` | ESLint |
+
+## ✅ Tests & CI
+
+Integration tests in [`tests/`](./tests) exercise the three critical business
+paths directly against a throwaway SQLite database (no server needed):
+
+- **POS sale** — stock deduction from the recipe, ledger rows, COGS, and the
+  oversell rollback.
+- **Promotions** — code validation, minimum-order rejection, discount applied
+  in a sale, and redemption tracking.
+- **Purchasing** — receiving adds stock, blends the moving-average cost, writes
+  the ledger, and rejects double-receiving.
+
+```bash
+npm test
+```
+
+GitHub Actions ([`.github/workflows/ci.yml`](./.github/workflows/ci.yml)) runs
+`npm test` and `npm run build` on every push and pull request.
 
 ---
 
