@@ -2,6 +2,7 @@ import "server-only";
 import { Prisma } from "@prisma/client";
 import { prisma } from "./prisma";
 import { toNumber, round } from "./decimal";
+import { resolvePromotion, isRejection } from "./promotions";
 
 export class InsufficientStockError extends Error {
   constructor(
@@ -14,6 +15,13 @@ export class InsufficientStockError extends Error {
       `Insufficient stock for ${ingredientName}: ${available}${unit} available, ${required}${unit} required`,
     );
     this.name = "InsufficientStockError";
+  }
+}
+
+export class PromoError extends Error {
+  constructor(public reason: string) {
+    super(reason);
+    this.name = "PromoError";
   }
 }
 
@@ -33,6 +41,7 @@ export interface SellInput {
   lines: CartLine[];
   paymentMethod: string;
   discountAmount?: number;
+  promoCode?: string | null;
   taxRate?: number; // e.g. 0.07 for 7% VAT
   customerNotes?: string;
 }
@@ -78,6 +87,7 @@ export async function sellOrder(input: SellInput) {
     lines,
     paymentMethod,
     discountAmount = 0,
+    promoCode = null,
     taxRate = 0,
     customerNotes,
   } = input;
@@ -181,8 +191,18 @@ export async function sellOrder(input: SellInput) {
       }
     }
 
-    // --- 3. Financials -----------------------------------------------------
-    const discount = round(Math.min(discountAmount, subtotal));
+    // --- 3. Promotions + financials ----------------------------------------
+    // Resolve a promo (explicit code or best auto-promo) against the subtotal.
+    // An invalid explicit code blocks the sale so the cashier is told why.
+    const promo = await resolvePromotion(tx, {
+      branchId,
+      code: promoCode,
+      subtotal,
+    });
+    if (isRejection(promo)) throw new PromoError(promo.error);
+    const promoDiscount = promo?.discountAmount ?? 0;
+
+    const discount = round(Math.min(discountAmount + promoDiscount, subtotal));
     const taxable = subtotal - discount;
     const taxAmount = round(taxable * taxRate);
     const total = round(taxable + taxAmount);
@@ -254,6 +274,30 @@ export async function sellOrder(input: SellInput) {
       });
     }
 
+    // Record the promo redemption and count it against the cap (guarded so a
+    // concurrent sale can't push past max_redemptions).
+    if (promo && promoDiscount > 0) {
+      const bumped = await tx.$executeRaw`
+        UPDATE "Promotion"
+        SET "timesRedeemed" = "timesRedeemed" + 1,
+            "updatedAt" = ${new Date()}
+        WHERE "id" = ${promo.promotionId}
+          AND ("maxRedemptions" IS NULL OR "timesRedeemed" < "maxRedemptions")
+      `;
+      if (bumped === 0) {
+        throw new PromoError("This promotion has reached its redemption limit.");
+      }
+      await tx.promoRedemption.create({
+        data: {
+          promotionId: promo.promotionId,
+          orderId: order.id,
+          branchId,
+          customerId,
+          discountAmount: promoDiscount,
+        },
+      });
+    }
+
     // Update customer loyalty/spend.
     if (customerId) {
       await tx.customer.update({
@@ -266,6 +310,6 @@ export async function sellOrder(input: SellInput) {
       });
     }
 
-    return order;
+    return { order, appliedPromo: promo };
   });
 }

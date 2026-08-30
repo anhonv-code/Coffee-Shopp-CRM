@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { formatMoney } from "@/lib/format";
 import { PAYMENT_METHODS, PAYMENT_METHOD_LABELS } from "@/lib/constants";
@@ -16,6 +16,11 @@ interface CartItem {
   label: string;
   price: number;
   qty: number;
+}
+interface AppliedPromo {
+  code: string | null;
+  name: string;
+  discountAmount: number;
 }
 
 const TAX_RATE = 0.07; // 7% VAT
@@ -34,6 +39,10 @@ export function PosClient({
   const [customerId, setCustomerId] = useState<string>("");
   const [paymentMethod, setPaymentMethod] = useState<string>("cash");
   const [discount, setDiscount] = useState<number>(0);
+  const [promoInput, setPromoInput] = useState<string>("");
+  const [appliedPromo, setAppliedPromo] = useState<AppliedPromo | null>(null);
+  const [promoError, setPromoError] = useState<string | null>(null);
+  const [promoChecking, setPromoChecking] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [message, setMessage] = useState<
     { type: "success" | "error"; text: string } | null
@@ -79,10 +88,58 @@ export function PosClient({
     () => lines.reduce((s, i) => s + i.price * i.qty, 0),
     [lines],
   );
-  const clampedDiscount = Math.min(discount, subtotal);
+  const promoDiscount = appliedPromo?.discountAmount ?? 0;
+  const clampedDiscount = Math.min(discount + promoDiscount, subtotal);
   const taxable = subtotal - clampedDiscount;
   const tax = Math.round(taxable * TAX_RATE * 100) / 100;
   const total = Math.round((taxable + tax) * 100) / 100;
+
+  // Validate a promo code against the current subtotal.
+  const checkPromo = useCallback(
+    async (code: string): Promise<void> => {
+      if (!code.trim() || subtotal <= 0) return;
+      setPromoChecking(true);
+      setPromoError(null);
+      try {
+        const res = await fetch("/api/pos/promo", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ branchId, code, subtotal }),
+        });
+        const data = await res.json();
+        if (data.ok) {
+          setAppliedPromo(data.promo);
+          setPromoError(null);
+        } else {
+          setAppliedPromo(null);
+          setPromoError(data.message ?? "Promo not valid.");
+        }
+      } catch {
+        setPromoError("Could not check the promo code.");
+      } finally {
+        setPromoChecking(false);
+      }
+    },
+    [branchId, subtotal],
+  );
+
+  // Re-validate an applied promo whenever the cart total changes (a percentage
+  // discount moves with the subtotal; a min-order promo can drop out).
+  useEffect(() => {
+    if (!appliedPromo) return;
+    if (subtotal <= 0) {
+      setAppliedPromo(null);
+      return;
+    }
+    checkPromo(appliedPromo.code ?? "");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [subtotal]);
+
+  function removePromo() {
+    setAppliedPromo(null);
+    setPromoInput("");
+    setPromoError(null);
+  }
 
   async function checkout() {
     if (!lines.length || submitting) return;
@@ -96,7 +153,8 @@ export function PosClient({
           branchId,
           customerId: customerId || null,
           paymentMethod,
-          discountAmount: clampedDiscount,
+          discountAmount: discount, // manual discount; promo applied server-side
+          promoCode: appliedPromo?.code ?? null,
           taxRate: TAX_RATE,
           lines: lines.map((l) => ({ variantId: l.variantId, quantity: l.qty })),
         }),
@@ -119,6 +177,9 @@ export function PosClient({
       setCart({});
       setDiscount(0);
       setCustomerId("");
+      setAppliedPromo(null);
+      setPromoInput("");
+      setPromoError(null);
       router.refresh(); // update dashboards / stock behind the scenes
     } catch {
       setMessage({ type: "error", text: "Network error. Please try again." });
@@ -267,16 +328,65 @@ export function PosClient({
           </div>
         </div>
 
+        {/* Promo code */}
+        <div className="mt-3 border-t border-coffee-100 pt-3">
+          <label className="mb-1 block text-xs font-medium text-coffee-500">
+            Promo code
+          </label>
+          {appliedPromo ? (
+            <div className="flex items-center justify-between rounded-lg bg-emerald-50 px-3 py-2 text-sm">
+              <span className="text-emerald-700">
+                {appliedPromo.code ? `${appliedPromo.code} · ` : ""}
+                {appliedPromo.name}
+              </span>
+              <button
+                onClick={removePromo}
+                className="text-xs font-medium text-emerald-700 underline"
+              >
+                Remove
+              </button>
+            </div>
+          ) : (
+            <div className="flex gap-2">
+              <input
+                className="input"
+                placeholder="e.g. WELCOME50"
+                value={promoInput}
+                onChange={(e) => setPromoInput(e.target.value.toUpperCase())}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") checkPromo(promoInput);
+                }}
+              />
+              <button
+                onClick={() => checkPromo(promoInput)}
+                disabled={!promoInput.trim() || subtotal <= 0 || promoChecking}
+                className="btn-ghost shrink-0"
+              >
+                {promoChecking ? "…" : "Apply"}
+              </button>
+            </div>
+          )}
+          {promoError && (
+            <p className="mt-1 text-xs text-red-600">{promoError}</p>
+          )}
+        </div>
+
         {/* Totals */}
         <div className="mt-4 space-y-1 border-t border-coffee-100 pt-4 text-sm">
           <div className="flex justify-between text-coffee-600">
             <span>Subtotal</span>
             <span>{formatMoney(subtotal)}</span>
           </div>
-          {clampedDiscount > 0 && (
+          {discount > 0 && (
             <div className="flex justify-between text-emerald-600">
-              <span>Discount</span>
-              <span>−{formatMoney(clampedDiscount)}</span>
+              <span>Manual discount</span>
+              <span>−{formatMoney(Math.min(discount, subtotal))}</span>
+            </div>
+          )}
+          {promoDiscount > 0 && (
+            <div className="flex justify-between text-emerald-600">
+              <span>Promo{appliedPromo?.code ? ` (${appliedPromo.code})` : ""}</span>
+              <span>−{formatMoney(promoDiscount)}</span>
             </div>
           )}
           <div className="flex justify-between text-coffee-600">

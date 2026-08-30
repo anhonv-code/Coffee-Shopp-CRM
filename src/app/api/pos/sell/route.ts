@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { getSession } from "@/lib/auth";
 import { can, isSuperAdmin } from "@/lib/rbac";
-import { sellOrder, InsufficientStockError } from "@/lib/pos";
+import { sellOrder, InsufficientStockError, PromoError } from "@/lib/pos";
 import { PAYMENT_METHODS } from "@/lib/constants";
 
 const bodySchema = z.object({
@@ -11,6 +11,7 @@ const bodySchema = z.object({
   customerId: z.string().nullish(),
   paymentMethod: z.enum(PAYMENT_METHODS),
   discountAmount: z.number().min(0).optional(),
+  promoCode: z.string().max(100).nullish(),
   taxRate: z.number().min(0).max(1).optional(),
   orderType: z.string().optional(),
   customerNotes: z.string().optional(),
@@ -62,7 +63,7 @@ export async function POST(req: Request) {
   }
 
   try {
-    const order = await sellOrder({
+    const { order, appliedPromo } = await sellOrder({
       branchId,
       userId: user.id,
       posSessionId: body.posSessionId ?? null,
@@ -70,6 +71,7 @@ export async function POST(req: Request) {
       lines: body.lines,
       paymentMethod: body.paymentMethod,
       discountAmount: body.discountAmount ?? 0,
+      promoCode: body.promoCode ?? null,
       taxRate: body.taxRate ?? 0,
       orderType: body.orderType ?? "dine_in",
       customerNotes: body.customerNotes,
@@ -80,8 +82,15 @@ export async function POST(req: Request) {
       orderId: order.id,
       orderNumber: order.orderNumber,
       total: order.total,
+      appliedPromo: appliedPromo ?? null,
     });
   } catch (err) {
+    if (err instanceof PromoError) {
+      return NextResponse.json(
+        { error: "promo", message: err.reason },
+        { status: 409 },
+      );
+    }
     if (err instanceof InsufficientStockError) {
       return NextResponse.json(
         {

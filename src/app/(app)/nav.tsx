@@ -10,6 +10,7 @@ const NAV = [
   { href: "/orders", label: "Orders", icon: "📦" },
   { href: "/inventory", label: "Inventory", icon: "🫘" },
   { href: "/products", label: "Products & Recipes", icon: "☕" },
+  { href: "/promotions", label: "Promotions", icon: "🎟️" },
 ];
 
 export function Nav() {

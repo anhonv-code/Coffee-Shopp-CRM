@@ -241,20 +241,49 @@ async function main() {
     ),
   );
 
-  // --- a promotion ---------------------------------------------------------
-  await prisma.promotion.create({
-    data: {
-      branchId: bkk1.id,
-      name: "Morning 10% Off",
-      code: "MORNING10",
-      promoType: "percentage_off",
-      discountValue: 10,
-      minOrderValue: 0,
-      startDate: new Date(),
-      endDate: new Date(Date.now() + 1000 * 60 * 60 * 24 * 90),
-      timeStart: "07:00",
-      timeEnd: "10:00",
-    },
+  // --- promotions ----------------------------------------------------------
+  const in90days = new Date(Date.now() + 1000 * 60 * 60 * 24 * 90);
+  await prisma.promotion.createMany({
+    data: [
+      {
+        // Always-valid code promo — great for demos/tests.
+        branchId: bkk1.id,
+        name: "Welcome ฿50 Off",
+        code: "WELCOME50",
+        promoType: "fixed_off",
+        discountValue: 50,
+        minOrderValue: 100,
+        startDate: new Date(),
+        endDate: in90days,
+      },
+      {
+        // Time-windowed code promo (mornings only).
+        branchId: bkk1.id,
+        name: "Morning 10% Off",
+        code: "MORNING10",
+        promoType: "percentage_off",
+        discountValue: 10,
+        maxDiscount: 40,
+        minOrderValue: 0,
+        startDate: new Date(),
+        endDate: in90days,
+        timeStart: "07:00",
+        timeEnd: "10:00",
+      },
+      {
+        // Auto-applied weekend promo (no code) — best auto-promo wins at checkout.
+        branchId: bkk1.id,
+        name: "Weekend 15% Off",
+        code: null,
+        promoType: "percentage_off",
+        discountValue: 15,
+        maxDiscount: 60,
+        minOrderValue: 150,
+        startDate: new Date(),
+        endDate: in90days,
+        daysOfWeek: [0, 6],
+      },
+    ],
   });
 
   // --- historical orders (to populate the dashboard) -----------------------
