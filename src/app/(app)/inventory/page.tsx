@@ -1,6 +1,7 @@
+import Link from "next/link";
 import { requireUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
-import { branchScope } from "@/lib/rbac";
+import { branchScope, can } from "@/lib/rbac";
 import { toNumber } from "@/lib/decimal";
 import { formatMoney, formatNumber, formatDateTime } from "@/lib/format";
 import { PageHeader, StatCard, Badge, EmptyState } from "@/components/ui";
@@ -8,6 +9,7 @@ import { PageHeader, StatCard, Badge, EmptyState } from "@/components/ui";
 export default async function InventoryPage() {
   const user = await requireUser();
   const scope = branchScope(user);
+  const canManage = can(user.role, "inventory:manage");
 
   const [ingredients, movements] = await Promise.all([
     prisma.ingredient.findMany({
@@ -32,6 +34,13 @@ export default async function InventoryPage() {
       <PageHeader
         title="Inventory"
         subtitle="Ingredient stock levels and the movement ledger"
+        actions={
+          canManage ? (
+            <Link href="/inventory/purchases" className="btn-primary">
+              Purchase orders
+            </Link>
+          ) : undefined
+        }
       />
 
       <div className="mb-6 grid grid-cols-2 gap-4 lg:grid-cols-4">

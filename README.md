@@ -22,15 +22,16 @@ type-safe application you can run today and grow into the full system.
 | **Inventory** | ✅ | Stock on hand, stock value, low-stock flags, movement ledger |
 | **Products & Recipes** | ✅ | Variants, recipe (BOM), auto cost + margin per drink |
 | **Promotions engine** | ✅ | Codes + auto-promos applied at checkout (windows, min order, discount cap, redemption limit), redemptions tracked — all inside the sale transaction |
+| **Purchasing / receiving** | ✅ | Create purchase orders and receive stock; receiving adds stock, writes the ledger, and updates each ingredient's moving-average cost — completing the inventory loop |
 | **Orders** | ✅ | Recent order history across channels |
 | **Dashboard** | ✅ | Today + 14-day revenue/COGS/margin, top products, payment mix, low stock |
 
 ### Designed, not yet built (next milestones)
 
 Online ordering site, delivery dispatch/tracking, Socket.IO realtime (kitchen
-display), staff scheduling, purchase-order receiving flow, demand forecasting,
-and the **offline-sync layer** (the topic the original design explored in depth).
-The schema already includes the tables these need.
+display), staff scheduling, demand forecasting, and the **offline-sync layer**
+(the topic the original design explored in depth). The schema already includes
+the tables these need.
 
 **Demo promo codes** (Siam branch): `WELCOME50` (฿50 off, min ฿100), `MORNING10`
 (10% off, 07:00–10:00), plus an auto-applied *Weekend 15% Off* (no code, weekends,
