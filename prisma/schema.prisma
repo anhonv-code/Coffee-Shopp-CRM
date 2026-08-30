@@ -1,0 +1,511 @@
+// Coffee Shopp CRM — Prisma schema
+// -----------------------------------------------------------------------------
+// DEV uses SQLite (zero-config). To deploy on PostgreSQL (as designed), change
+// the datasource provider below to "postgresql" and point DATABASE_URL at your
+// Postgres instance, then run `prisma migrate deploy`.
+//
+// Design notes:
+// - Money & quantities use Decimal for exactness (no float rounding at the till).
+// - Status/type fields are plain strings with the allowed values documented
+//   inline; this keeps the schema portable between SQLite and Postgres. The
+//   canonical value lists live in src/lib/constants.ts and are enforced in app
+//   logic and Zod validators.
+// - Array-shaped columns (days_of_week, applicable_ids) are stored as Json for
+//   the same portability reason.
+// -----------------------------------------------------------------------------
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ===========================================================================
+// Core: branches, users, RBAC
+// ===========================================================================
+
+model Branch {
+  id        String   @id @default(cuid())
+  name      String
+  code      String   @unique // e.g. "BKK-01"
+  address   String?
+  phone     String?
+  timezone  String   @default("Asia/Bangkok")
+  currency  String   @default("THB")
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  users          User[]
+  ingredients    Ingredient[]
+  categories     Category[]
+  products       Product[]
+  recipes        Recipe[]
+  suppliers      Supplier[]
+  stockPurchases StockPurchase[]
+  stockMovements StockMovement[]
+  posSessions    PosSession[]
+  orders         Order[]
+  customers      Customer[]
+  promotions     Promotion[]
+
+  @@index([isActive])
+}
+
+/// Roles are coarse-grained; fine-grained permissions are derived in
+/// src/lib/rbac.ts. SUPER_ADMIN has no branch (sees all branches).
+/// Allowed User.role values: SUPER_ADMIN | BRANCH_MANAGER | BARISTA | CASHIER
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  name         String
+  passwordHash String
+  role         String   @default("BARISTA")
+  branchId     String? // null => all branches (SUPER_ADMIN)
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  branch          Branch?             @relation(fields: [branchId], references: [id])
+  posSessions     PosSession[]
+  ordersCreated   Order[]             @relation("OrderCreatedBy")
+  ordersDelivered Order[]             @relation("OrderDeliveryDriver")
+  stockMovements  StockMovement[]
+  purchases       StockPurchase[]
+  statusChanges   OrderStatusHistory[]
+
+  @@index([branchId])
+  @@index([role])
+}
+
+// ===========================================================================
+// Catalog: categories, products, variants
+// ===========================================================================
+
+model Category {
+  id        String   @id @default(cuid())
+  branchId  String? // null => global category
+  name      String
+  parentId  String?
+  sortOrder Int      @default(0)
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  branch   Branch?    @relation(fields: [branchId], references: [id])
+  parent   Category?  @relation("CategoryTree", fields: [parentId], references: [id])
+  children Category[] @relation("CategoryTree")
+  products Product[]
+
+  @@index([branchId])
+}
+
+model Product {
+  id          String   @id @default(cuid())
+  branchId    String
+  categoryId  String?
+  name        String
+  description String?
+  basePrice   Decimal
+  imageUrl    String?
+  isActive    Boolean  @default(true)
+  isSeasonal  Boolean  @default(false)
+  sortOrder   Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  branch   Branch           @relation(fields: [branchId], references: [id])
+  category Category?        @relation(fields: [categoryId], references: [id])
+  variants ProductVariant[]
+
+  @@index([branchId, isActive])
+  @@index([categoryId])
+}
+
+model ProductVariant {
+  id        String   @id @default(cuid())
+  productId String
+  name      String // "Medium", "Large", "Oat"
+  price     Decimal
+  sizeLabel String? // "S" | "M" | "L"
+  isDefault Boolean  @default(false)
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  product    Product     @relation(fields: [productId], references: [id], onDelete: Cascade)
+  recipe     Recipe?
+  orderItems OrderItem[]
+
+  @@unique([productId, name])
+  @@index([productId])
+}
+
+// ===========================================================================
+// Inventory: ingredients, recipes (BOM), suppliers, purchases, stock ledger
+// ===========================================================================
+
+model Ingredient {
+  id            String   @id @default(cuid())
+  branchId      String
+  name          String
+  sku           String?  @unique
+  barcode       String?
+  unit          String // 'g' | 'ml' | 'pcs' | 'L' | 'kg'
+  unitCost      Decimal  @default(0)
+  reorderLevel  Decimal  @default(0)
+  maxStockLevel Decimal?
+  shelfLifeDays Int?
+  isActive      Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  // Denormalized current stock — kept in sync by the app inside the sale txn.
+  currentStock Decimal @default(0)
+  stockValue   Decimal @default(0)
+
+  branch         Branch          @relation(fields: [branchId], references: [id])
+  recipeItems    RecipeItem[]
+  purchaseItems  PurchaseItem[]
+  stockMovements StockMovement[]
+
+  @@index([branchId])
+  @@index([branchId, reorderLevel, currentStock])
+}
+
+model Recipe {
+  id        String   @id @default(cuid())
+  variantId String   @unique
+  branchId  String
+  version   Int      @default(1)
+  isActive  Boolean  @default(true)
+  notes     String?
+  totalCost Decimal  @default(0) // sum of recipe item line costs
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  variant ProductVariant @relation(fields: [variantId], references: [id], onDelete: Cascade)
+  branch  Branch         @relation(fields: [branchId], references: [id])
+  items   RecipeItem[]
+
+  @@index([branchId])
+}
+
+model RecipeItem {
+  id           String  @id @default(cuid())
+  recipeId     String
+  ingredientId String
+  quantity     Decimal
+  unit         String
+  isOptional   Boolean @default(false)
+  sortOrder    Int     @default(0)
+  lineCost     Decimal @default(0) // quantity * ingredient.unitCost
+
+  recipe     Recipe     @relation(fields: [recipeId], references: [id], onDelete: Cascade)
+  ingredient Ingredient @relation(fields: [ingredientId], references: [id])
+
+  @@unique([recipeId, ingredientId])
+  @@index([recipeId])
+  @@index([ingredientId])
+}
+
+model Supplier {
+  id            String   @id @default(cuid())
+  branchId      String?
+  name          String
+  contactPerson String?
+  phone         String?
+  email         String?
+  address       String?
+  leadTimeDays  Int      @default(3)
+  isActive      Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  branch    Branch?         @relation(fields: [branchId], references: [id])
+  purchases StockPurchase[]
+
+  @@index([branchId])
+}
+
+model StockPurchase {
+  id           String    @id @default(cuid())
+  branchId     String
+  supplierId   String
+  poNumber     String?   @unique
+  status       String    @default("draft") // draft|ordered|partial|received|cancelled
+  orderDate    DateTime  @default(now())
+  expectedDate DateTime?
+  receivedDate DateTime?
+  totalCost    Decimal   @default(0)
+  notes        String?
+  createdById  String
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  branch    Branch         @relation(fields: [branchId], references: [id])
+  supplier  Supplier       @relation(fields: [supplierId], references: [id])
+  createdBy User           @relation(fields: [createdById], references: [id])
+  items     PurchaseItem[]
+
+  @@index([branchId, status])
+  @@index([supplierId])
+}
+
+model PurchaseItem {
+  id               String    @id @default(cuid())
+  purchaseId       String
+  ingredientId     String
+  quantityOrdered  Decimal
+  quantityReceived Decimal   @default(0)
+  unitCost         Decimal
+  lineTotal        Decimal
+  receivedAt       DateTime?
+
+  purchase   StockPurchase @relation(fields: [purchaseId], references: [id], onDelete: Cascade)
+  ingredient Ingredient    @relation(fields: [ingredientId], references: [id])
+
+  @@index([purchaseId])
+  @@index([ingredientId])
+}
+
+/// The stock ledger — every in/out is one immutable row. `quantity` is always
+/// positive; `direction` ('in'|'out') carries the sign.
+model StockMovement {
+  id            String   @id @default(cuid())
+  branchId      String
+  ingredientId  String
+  movementType  String // purchase|sale|waste|adjustment|transfer_in|transfer_out
+  quantity      Decimal
+  direction     String // in|out
+  unitCost      Decimal
+  totalValue    Decimal
+  referenceType String? // 'order' | 'purchase' | 'waste' ...
+  referenceId   String?
+  reason        String?
+  notes         String?
+  performedById String
+  createdAt     DateTime @default(now())
+
+  branch      Branch     @relation(fields: [branchId], references: [id])
+  ingredient  Ingredient @relation(fields: [ingredientId], references: [id])
+  performedBy User       @relation(fields: [performedById], references: [id])
+
+  @@index([branchId, ingredientId])
+  @@index([branchId, movementType])
+  @@index([branchId, createdAt])
+  @@index([referenceType, referenceId])
+}
+
+// ===========================================================================
+// POS: sessions, orders, order items, payments, status history
+// ===========================================================================
+
+model PosSession {
+  id          String    @id @default(cuid())
+  branchId    String
+  userId      String
+  registerId  String? // "REG-01"
+  status      String    @default("open") // open|closed|suspended
+  openedAt    DateTime  @default(now())
+  closedAt    DateTime?
+  openingCash Decimal   @default(0)
+  closingCash Decimal?
+  expectedCash Decimal?
+  variance    Decimal?
+  totalSales  Decimal   @default(0)
+  totalOrders Int       @default(0)
+  notes       String?
+
+  branch Branch  @relation(fields: [branchId], references: [id])
+  user   User    @relation(fields: [userId], references: [id])
+  orders Order[]
+
+  @@index([branchId, status])
+  @@index([userId])
+}
+
+model Customer {
+  id            String   @id @default(cuid())
+  branchId      String?
+  name          String
+  phone         String?
+  email         String?
+  loyaltyPoints Int      @default(0)
+  totalSpent    Decimal  @default(0)
+  visitCount    Int      @default(0)
+  notes         String?
+  isActive      Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  branch          Branch?           @relation(fields: [branchId], references: [id])
+  orders          Order[]
+  promoRedemptions PromoRedemption[]
+
+  @@index([branchId])
+  @@index([phone])
+}
+
+model Order {
+  id           String  @id @default(cuid())
+  branchId     String
+  orderNumber  String
+  posSessionId String?
+  customerId   String?
+
+  source    String @default("pos") // pos|online|delivery|phone|app
+  orderType String @default("dine_in") // dine_in|takeaway|delivery|preorder
+  status    String @default("pending") // pending|confirmed|preparing|ready|completed|cancelled|refunded|partially_refunded
+
+  // delivery (nullable)
+  deliveryAddress    String?
+  deliveryLat        Decimal?
+  deliveryLng        Decimal?
+  deliveryDriverId   String?
+  deliveryStatus     String? // assigned|picked_up|in_transit|delivered
+
+  // financials
+  subtotal       Decimal @default(0)
+  discountAmount Decimal @default(0)
+  taxAmount      Decimal @default(0)
+  deliveryFee    Decimal @default(0)
+  total          Decimal @default(0)
+  cogs           Decimal @default(0) // total cost of goods for margin/P&L
+  amountPaid     Decimal @default(0)
+  amountRefunded Decimal @default(0)
+  currency       String  @default("THB")
+
+  createdAt   DateTime  @default(now())
+  confirmedAt DateTime?
+  preparedAt  DateTime?
+  completedAt DateTime?
+  cancelledAt DateTime?
+  cancelReason String?
+
+  customerNotes String?
+  internalNotes String?
+
+  branch        Branch               @relation(fields: [branchId], references: [id])
+  posSession    PosSession?          @relation(fields: [posSessionId], references: [id])
+  customer      Customer?            @relation(fields: [customerId], references: [id])
+  createdBy     User?                @relation("OrderCreatedBy", fields: [createdById], references: [id])
+  createdById   String?
+  deliveryDriver User?               @relation("OrderDeliveryDriver", fields: [deliveryDriverId], references: [id])
+  items         OrderItem[]
+  payments      Payment[]
+  statusHistory OrderStatusHistory[]
+  promoRedemptions PromoRedemption[]
+
+  @@unique([branchId, orderNumber])
+  @@index([branchId, status])
+  @@index([branchId, source])
+  @@index([branchId, createdAt])
+  @@index([customerId])
+  @@index([posSessionId])
+}
+
+model OrderItem {
+  id             String  @id @default(cuid())
+  orderId        String
+  variantId      String
+  productName    String // snapshot
+  variantName    String // snapshot
+  quantity       Int     @default(1)
+  unitPrice      Decimal // snapshot
+  discountAmount Decimal @default(0)
+  lineTotal      Decimal
+  taxAmount      Decimal @default(0)
+  cogs           Decimal @default(0) // recipe cost snapshot * qty
+  notes          String?
+
+  order   Order          @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  variant ProductVariant @relation(fields: [variantId], references: [id])
+
+  @@index([orderId])
+  @@index([variantId])
+}
+
+model OrderStatusHistory {
+  id          String   @id @default(cuid())
+  orderId     String
+  oldStatus   String?
+  newStatus   String
+  changedById String?
+  notes       String?
+  createdAt   DateTime @default(now())
+
+  order     Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  changedBy User? @relation(fields: [changedById], references: [id])
+
+  @@index([orderId])
+}
+
+model Payment {
+  id             String    @id @default(cuid())
+  orderId        String
+  paymentMethod  String // cash|credit_card|debit_card|mobile|promptpay|line_pay|stripe|other
+  amount         Decimal
+  currency       String    @default("THB")
+  status         String    @default("completed") // pending|completed|refunded|failed
+  transactionRef String?
+  paidAt         DateTime  @default(now())
+  refundedAt     DateTime?
+  refundedAmount Decimal   @default(0)
+  notes          String?
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([orderId])
+  @@index([status])
+}
+
+// ===========================================================================
+// Promotions
+// ===========================================================================
+
+model Promotion {
+  id            String   @id @default(cuid())
+  branchId      String? // null => all branches
+  name          String
+  code          String?  @unique
+  promoType     String // percentage_off|fixed_off|bogo|buy_x_get_y|free_item|loyalty_reward
+  discountValue Decimal
+  minOrderValue Decimal  @default(0)
+  maxDiscount   Decimal?
+  applicableTo  String   @default("all") // all|category|product|variant
+  applicableIds Json? // string[] of ids
+  startDate     DateTime
+  endDate       DateTime
+  daysOfWeek    Json? // number[] 0-6, null => all days
+  timeStart     String? // "HH:mm"
+  timeEnd       String?
+  maxRedemptions Int?
+  timesRedeemed Int      @default(0)
+  isActive      Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  branch      Branch?           @relation(fields: [branchId], references: [id])
+  redemptions PromoRedemption[]
+
+  @@index([branchId, isActive])
+}
+
+model PromoRedemption {
+  id             String   @id @default(cuid())
+  promotionId    String
+  orderId        String
+  branchId       String
+  customerId     String?
+  discountAmount Decimal
+  redeemedAt     DateTime @default(now())
+
+  promotion Promotion @relation(fields: [promotionId], references: [id])
+  order     Order     @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  customer  Customer? @relation(fields: [customerId], references: [id])
+
+  @@index([promotionId])
+  @@index([orderId])
+}
