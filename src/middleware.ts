@@ -4,7 +4,8 @@ import { jwtVerify } from "jose";
 // Lightweight auth gate. We only check that a valid session cookie exists here
 // (Edge runtime). Full user resolution + RBAC happens in server components and
 // route handlers via src/lib/auth.ts.
-const PUBLIC_PATHS = ["/login", "/api/auth/login"];
+// Public routes: the login screen and the customer-facing online ordering site.
+const PUBLIC_PATHS = ["/login", "/api/auth/login", "/order", "/api/order"];
 
 function secretKey() {
   return new TextEncoder().encode(process.env.AUTH_SECRET ?? "");

@@ -77,6 +77,15 @@ async function main() {
         role: "BARISTA",
         branchId: bkk1.id,
       },
+      {
+        // Attribution user for customer-facing online orders.
+        email: "system@coffeeshopp.com",
+        name: "Online Orders",
+        passwordHash: pwd,
+        role: "BARISTA",
+        branchId: null,
+        isActive: true,
+      },
     ],
   });
   const barista = await prisma.user.findUniqueOrThrow({
@@ -387,7 +396,50 @@ async function main() {
     }
   }
 
-  console.log(`✅  Seed complete: 2 branches, 3 users, ${ingSpecs.length} ingredients, ${variants.length} variants, ${orderCounter} historical orders.`);
+  // --- a few live online orders for the kitchen display --------------------
+  const systemUser = await prisma.user.findUniqueOrThrow({
+    where: { email: "system@coffeeshopp.com" },
+  });
+  const kitchenStates = ["pending", "confirmed", "preparing"] as const;
+  for (let i = 0; i < kitchenStates.length; i++) {
+    const v = variants[i % variants.length];
+    const qty = 1 + (i % 2);
+    const unitPrice = Number(v.price);
+    const subtotal = round(unitPrice * qty, 2);
+    const tax = round(subtotal * 0.07, 2);
+    const total = round(subtotal + tax, 2);
+    await prisma.order.create({
+      data: {
+        branchId: bkk1.id,
+        orderNumber: `ORD-ONLINE-${String(i + 1).padStart(3, "0")}`,
+        source: "online",
+        orderType: "takeaway",
+        status: kitchenStates[i],
+        subtotal,
+        taxAmount: tax,
+        total,
+        cogs: round(Number(v.recipe?.totalCost ?? 0) * qty, 4),
+        amountPaid: 0,
+        customerNotes: `Online Customer ${i + 1}`,
+        createdById: systemUser.id,
+        confirmedAt: kitchenStates[i] !== "pending" ? new Date() : null,
+        items: {
+          create: {
+            variantId: v.id,
+            productName: v.product.name,
+            variantName: v.name,
+            quantity: qty,
+            unitPrice,
+            lineTotal: subtotal,
+            cogs: round(Number(v.recipe?.totalCost ?? 0) * qty, 4),
+          },
+        },
+        statusHistory: { create: { newStatus: kitchenStates[i], changedById: systemUser.id } },
+      },
+    });
+  }
+
+  console.log(`✅  Seed complete: 2 branches, 4 users, ${ingSpecs.length} ingredients, ${variants.length} variants, ${orderCounter} historical orders, ${kitchenStates.length} live online orders.`);
   console.log("");
   console.log("   Login accounts (password: password123):");
   console.log("   • admin@coffeeshopp.com     (Super Admin — all branches)");

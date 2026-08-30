@@ -43,6 +43,10 @@ export interface SellInput {
   promoCode?: string | null;
   taxRate?: number; // e.g. 0.07 for 7% VAT
   customerNotes?: string;
+  /** Initial order status. POS sales are "completed"; online orders start "pending". */
+  status?: string;
+  /** Whether the order is paid at creation. Online (pay-on-pickup) orders pass false. */
+  markPaid?: boolean;
 }
 
 /** Generate a per-branch, per-day order number: ORD-YYYYMMDD-0042 */
@@ -89,6 +93,8 @@ export async function sellOrder(input: SellInput) {
     promoCode = null,
     taxRate = 0,
     customerNotes,
+    status = "completed",
+    markPaid = true,
   } = input;
 
   if (!lines.length) throw new Error("Cannot create an empty order");
@@ -209,6 +215,8 @@ export async function sellOrder(input: SellInput) {
     // --- 4. Create the order, items, ledger rows, and payment --------------
     const orderNumber = await nextOrderNumber(tx, branchId);
 
+    const now = new Date();
+    const isCompleted = status === "completed";
     const order = await tx.order.create({
       data: {
         branchId,
@@ -217,28 +225,29 @@ export async function sellOrder(input: SellInput) {
         customerId,
         source,
         orderType,
-        status: "completed",
+        status,
         subtotal,
         discountAmount: discount,
         taxAmount,
         total,
         cogs: round(totalCogs, 4),
-        amountPaid: total,
+        amountPaid: markPaid ? total : 0,
         currency: "THB",
         customerNotes,
         createdById: userId,
-        confirmedAt: new Date(),
-        completedAt: new Date(),
+        confirmedAt: isCompleted || status === "confirmed" ? now : null,
+        completedAt: isCompleted ? now : null,
         items: { createMany: { data: orderItemsData } },
-        payments: {
-          create: {
-            paymentMethod,
-            amount: total,
-            status: "completed",
-          },
-        },
+        // Record a payment only when the order is paid at creation.
+        ...(markPaid
+          ? {
+              payments: {
+                create: { paymentMethod, amount: total, status: "completed" },
+              },
+            }
+          : {}),
         statusHistory: {
-          create: { newStatus: "completed", changedById: userId },
+          create: { newStatus: status, changedById: userId },
         },
       },
       include: { items: true, payments: true },
@@ -297,8 +306,8 @@ export async function sellOrder(input: SellInput) {
       });
     }
 
-    // Update customer loyalty/spend.
-    if (customerId) {
+    // Update customer loyalty/spend once the order is actually paid.
+    if (customerId && markPaid) {
       await tx.customer.update({
         where: { id: customerId },
         data: {

@@ -23,13 +23,15 @@ type-safe application you can run today and grow into the full system.
 | **Products & Recipes** | ✅ | Variants, recipe (BOM), auto cost + margin per drink |
 | **Promotions engine** | ✅ | Codes + auto-promos applied at checkout (windows, min order, discount cap, redemption limit), redemptions tracked — all inside the sale transaction |
 | **Purchasing / receiving** | ✅ | Create purchase orders and receive stock; receiving adds stock, writes the ledger, and updates each ingredient's moving-average cost — completing the inventory loop |
+| **Online ordering** | ✅ | Public storefront at `/order` (no login): browse the menu, order for pickup, reserves stock — lands in the kitchen queue as `pending`, pay on pickup |
+| **Kitchen display** | ✅ | Live board of active orders with a `pending → confirmed → preparing → ready → completed` state machine; payment settles on completion; auto-refreshes |
 | **Orders** | ✅ | Recent order history across channels |
 | **Dashboard** | ✅ | Today + 14-day revenue/COGS/margin, top products, payment mix, low stock |
 
 ### Designed, not yet built (next milestones)
 
-Online ordering site, delivery dispatch/tracking, Socket.IO realtime (kitchen
-display), staff scheduling, demand forecasting, and the **offline-sync layer**
+Delivery dispatch/tracking, Socket.IO realtime (the kitchen display currently
+polls), staff scheduling, demand forecasting, and the **offline-sync layer**
 (the topic the original design explored in depth). The schema already includes
 the tables these need.
 
@@ -110,6 +112,9 @@ paths directly against a throwaway SQLite database (no server needed):
   in a sale, and redemption tracking.
 - **Purchasing** — receiving adds stock, blends the moving-average cost, writes
   the ledger, and rejects double-receiving.
+- **Fulfillment** — an online order starts pending/unpaid but reserves stock,
+  advances through the kitchen state machine, and settles payment on completion;
+  illegal transitions are rejected.
 
 ```bash
 npm test
